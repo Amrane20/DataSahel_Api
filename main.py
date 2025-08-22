@@ -197,6 +197,17 @@ async def upload_main_file(session_id: str = Form(...), file: UploadFile = File(
     }
 
 
+@app.get("/debug-env")
+async def debug_env():
+    access_key = os.environ.get('AWS_ACCESS_KEY_ID')
+    secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
+    bucket_name = os.environ.get('S3_BUCKET_NAME')
+    
+    return {
+        "aws_access_key_id_is_set": bool(access_key),
+        "aws_secret_access_key_is_set": bool(secret_key),
+        "s3_bucket_name_is_set": bool(bucket_name)
+    }
 
 @app.delete("/delete-main-file/{session_id}/{filename}")
 async def delete_main_file(session_id: str, filename: str):
