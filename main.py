@@ -12,7 +12,8 @@ from enum import Enum
 from fastapi.responses import FileResponse 
 from fastapi.middleware.cors import CORSMiddleware
 
-
+import boto3
+from botocore.exceptions import NoCredentialsError
 
 app = FastAPI()
 
@@ -32,6 +33,13 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"], # Allows all methods (GET, POST, etc.)
     allow_headers=["*"], # Allows all headers
+)
+
+S3_BUCKET_NAME = os.environ.get('S3_BUCKET_NAME')
+s3_client = boto3.client(
+    's3',
+    aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+    aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY')
 )
 # =================================================================
 
@@ -67,15 +75,6 @@ class RuleSetConfig(BaseModel):
     session_id: str
     rules: List[ComparisonRule]
 
-# class CreateColumnConfig(BaseModel):
-#     session_id: str
-#     main_file_key: str
-#     reference_file_key: str
-#     source_columns: List[str]  
-#     new_column_name: str
-#     prefix: Optional[str] = ""  
-#     suffix: Optional[str] = "" 
-
 
 # This model defines a SINGLE new column configuration
 class NewColumnInfo(BaseModel):
@@ -92,9 +91,9 @@ class CreateColumnsConfig(BaseModel):
     new_columns: List[NewColumnInfo] # This is now a list
 
 
-# @app.get("/")
-# def read_root():
-#     return {"message": "Hello World"}
+@app.get("/")
+def read_root():
+    return {"message": "DataSahel Says Hello"}
 
 
 @app.get("/start-session")
@@ -108,50 +107,94 @@ def start_session():
     return {"session_id": session_id, "message": "Session started"}
 
 
+# old one
+# @app.post("/upload-main-file")
+# async def upload_main_file(session_id: str = Form(...), file: UploadFile = File(...)):
+#     folder_path = f"main_files/{session_id}"
+
+#     if not os.path.exists(folder_path):
+#         raise HTTPException(status_code=400, detail="Invalid session ID.")
+
+#     # Save the uploaded file temporarily
+#     temp_path = await save_uploaded_file(file, folder_path)
+#     final_path = temp_path
+#     final_filename = file.filename
+
+#     # If the file is an Excel file, convert it to CSV
+#     if temp_path.endswith((".xlsx", ".xls")):
+#         try:
+#             df = pd.read_excel(temp_path)
+#             # Create a new path for the CSV file with the same base name
+#             final_filename = Path(temp_path).stem + ".csv"
+#             final_path = os.path.join(folder_path, final_filename)
+#             df.to_csv(final_path, index=False)
+#             # Remove the original Excel file
+#             os.remove(temp_path)
+#         except Exception as e:
+#             raise HTTPException(status_code=500, detail=f"Error converting Excel to CSV: {e}")
+
+#     # Now, we read the CSV for the preview
+#     try:
+#         df_preview = pd.read_csv(final_path, nrows=2)
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Error reading file preview: {e}")
+
+#     # Clean up the preview for JSON response
+#     clean_preview_df = df_preview.astype(object).where(pd.notna(df_preview), None)
+#     preview_dict = clean_preview_df.to_dict(orient="records")
+#     file_size_kb = round(os.path.getsize(final_path) / 1024, 2)
+
+#     return {
+#         "filename": final_filename, # Return the new .csv filename
+#         "size_kb": file_size_kb,
+#         "preview": preview_dict,
+#         "session_id": session_id
+#     }
+
+
 
 @app.post("/upload-main-file")
 async def upload_main_file(session_id: str = Form(...), file: UploadFile = File(...)):
-    folder_path = f"main_files/{session_id}"
-
-    if not os.path.exists(folder_path):
-        raise HTTPException(status_code=400, detail="Invalid session ID.")
-
-    # Save the uploaded file temporarily
-    temp_path = await save_uploaded_file(file, folder_path)
-    final_path = temp_path
-    final_filename = file.filename
-
-    # If the file is an Excel file, convert it to CSV
-    if temp_path.endswith((".xlsx", ".xls")):
-        try:
-            df = pd.read_excel(temp_path)
-            # Create a new path for the CSV file with the same base name
-            final_filename = Path(temp_path).stem + ".csv"
-            final_path = os.path.join(folder_path, final_filename)
-            df.to_csv(final_path, index=False)
-            # Remove the original Excel file
-            os.remove(temp_path)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error converting Excel to CSV: {e}")
-
-    # Now, we read the CSV for the preview
+    # The key is the full path in the S3 bucket
+    file_key = f"{session_id}/main_files/{file.filename}"
+    
     try:
-        df_preview = pd.read_csv(final_path, nrows=2)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading file preview: {e}")
+        # Upload the file directly to S3
+        s3_client.upload_fileobj(file.file, S3_BUCKET_NAME, file_key)
+        
+        # For simplicity, we'll stop converting to CSV for now
+        # and assume the user uploads a CSV. We can add this back later.
+        
+        # To get a preview, we need to read the file from S3
+        response = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=file_key)
+        # Read only the first few lines for the preview
+        file_content = response['Body'].read().decode('utf-8').splitlines()
+        
+        # This is a simplified preview logic for CSV
+        header = file_content[0].split(',')
+        first_row = file_content[1].split(',')
+        second_row = file_content[2].split(',')
+        
+        preview_dict = [
+            dict(zip(header, first_row)),
+            dict(zip(header, second_row))
+        ]
 
-    # Clean up the preview for JSON response
-    clean_preview_df = df_preview.astype(object).where(pd.notna(df_preview), None)
-    preview_dict = clean_preview_df.to_dict(orient="records")
-    file_size_kb = round(os.path.getsize(final_path) / 1024, 2)
+        # Get file size from S3 metadata
+        head_object = s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=file_key)
+        file_size_kb = round(head_object['ContentLength'] / 1024, 2)
+
+    except NoCredentialsError:
+        raise HTTPException(status_code=500, detail="AWS credentials not available.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An error occurred with S3: {e}")
 
     return {
-        "filename": final_filename, # Return the new .csv filename
+        "filename": file.filename,
         "size_kb": file_size_kb,
         "preview": preview_dict,
         "session_id": session_id
     }
-
 
 
 
