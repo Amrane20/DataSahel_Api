@@ -18,10 +18,12 @@ app = FastAPI()
 
 # =================================================================
 origins = [
+    # "https://your-datasahel-ui-url.vercel.app",
+    # "http://localhost:5173",
+    # "http://localhost:3000", 
+    # "http://localhost",    
     "http://localhost:5173",
-    "http://localhost:3000", 
-    "http://localhost",    
-    "https://your-datasahel-ui-url.vercel.app"
+    "https://data-sahel-pv81uo9ot-amranes-projects.vercel.app",
 ]
 
 app.add_middleware(
