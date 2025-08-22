@@ -19,9 +19,9 @@ app = FastAPI()
 # =================================================================
 origins = [
     "http://localhost:5173",
-    "http://localhost:3000", # The address of your React app
-    "http://localhost",      # Sometimes needed
-    # You could add your deployed frontend URL here later
+    "http://localhost:3000", 
+    "http://localhost",    
+    "https://your-datasahel-ui-url.vercel.app"
 ]
 
 app.add_middleware(
@@ -65,7 +65,34 @@ class RuleSetConfig(BaseModel):
     session_id: str
     rules: List[ComparisonRule]
 
+# class CreateColumnConfig(BaseModel):
+#     session_id: str
+#     main_file_key: str
+#     reference_file_key: str
+#     source_columns: List[str]  
+#     new_column_name: str
+#     prefix: Optional[str] = ""  
+#     suffix: Optional[str] = "" 
 
+
+# This model defines a SINGLE new column configuration
+class NewColumnInfo(BaseModel):
+    source_columns: List[str]
+    new_column_name: str
+    prefix: Optional[str] = ""
+    suffix: Optional[str] = ""
+
+# This is the main model for the request, which now contains a LIST of new columns
+class CreateColumnsConfig(BaseModel):
+    session_id: str
+    main_file_key: str
+    reference_file_key: str
+    new_columns: List[NewColumnInfo] # This is now a list
+
+
+# @app.get("/")
+# def read_root():
+#     return {"message": "Hello World"}
 
 
 @app.get("/start-session")
@@ -257,7 +284,6 @@ async def upload_reference_file(session_id: str = Form(...), file: UploadFile = 
 
 
 
-# main.py
 
 @app.get("/columns/{session_id}")
 async def get_columns(session_id: str):
@@ -309,52 +335,6 @@ async def get_columns(session_id: str):
 
 
 
-# @app.get("/columns/{session_id}")
-# async def get_columns(session_id: str):
-
-#     # Gets the column names from the uploaded main and reference files.
-
-#     main_folder = f"main_files/{session_id}"
-#     ref_folder = f"reference_files/{session_id}"
-
-#     if not os.path.exists(main_folder) or not os.path.exists(ref_folder):
-#         raise HTTPException(status_code=404, detail="Session not found.")
-
-#     response = {
-#         "main_file_columns": [],
-#         "reference_files_columns": {}
-#     }
-
-#     # --- Get Main File Columns ---
-#     # Find the first csv or xlsx file in the main folder
-#     main_files = glob.glob(f"{main_folder}/*.csv") + glob.glob(f"{main_folder}/*.xlsx")
-#     if main_files:
-#         main_file_path = main_files[0]
-#         try:
-#             # Efficiently read only the header row to get columns
-#             df_main_cols = pd.read_csv(main_file_path, nrows=0).columns.tolist() if main_file_path.endswith(".csv") else pd.read_excel(main_file_path, nrows=0).columns.tolist()
-#             response["main_file_columns"] = df_main_cols
-#         except Exception as e:
-#             raise HTTPException(status_code=500, detail=f"Error reading main file: {e}")
-
-#     # --- Get Reference Files Columns ---
-#     ref_files = glob.glob(f"{ref_folder}/*.csv") + glob.glob(f"{ref_folder}/*.xlsx")
-#     for file_path in ref_files:
-#         filename = os.path.basename(file_path)
-#         try:
-#             # Read only the header for each reference file
-#             df_ref_cols = pd.read_csv(file_path, nrows=0).columns.tolist() if file_path.endswith(".csv") else pd.read_excel(file_path, nrows=0).columns.tolist()
-#             response["reference_files_columns"][filename] = df_ref_cols
-#         except Exception as e:
-#             # If one file fails, we can note it and continue
-#             response["reference_files_columns"][filename] = f"Error reading file: {e}"
-            
-#     return response
-
-
-
-
-
 @app.post("/configure/keys")
 async def configure_keys(config: KeyConfig):
 
@@ -380,7 +360,6 @@ async def configure_keys(config: KeyConfig):
         json.dump(meta_data, f, indent=4)
 
     return {"message": "Key columns have been configured successfully.", "config": meta_data["key_config"]}
-
 
 
 
@@ -550,6 +529,93 @@ async def get_status(session_id: str):
     results = config.get("results", None)
 
     return {"status": status, "results": results}
+
+
+def create_columns_logic(session_id: str, config_dict: dict):
+    """This background task now processes a LIST of new columns."""
+    print(f"[{session_id}] Starting 'Create Columns' background task...")
+    results_folder = f"results/{session_id}"
+    meta_path = f"reference_files/{session_id}/meta.json"
+    os.makedirs(results_folder, exist_ok=True)
+
+    try:
+        config = CreateColumnsConfig(**config_dict)
+        main_file_path = glob.glob(f"main_files/{session_id}/*.csv")[0]
+        ref_file_path = glob.glob(f"reference_files/{session_id}/*.csv")[0]
+        
+        main_df = pd.read_csv(main_file_path)
+        ref_df = pd.read_csv(ref_file_path)
+
+        merged_df = pd.merge(
+            main_df, ref_df,
+            left_on=config.main_file_key, right_on=config.reference_file_key,
+            how='left', suffixes=('', '_ref')
+        )
+
+        # Loop through each new column configuration from the list
+        for column_info in config.new_columns:
+            def create_new_value(row):
+                if pd.isna(row[column_info.source_columns[0]]):
+                    return ""
+                
+                combined_values = [str(row[col]) for col in column_info.source_columns if col in row and pd.notna(row[col])]
+                final_string = " ".join(combined_values)
+                return column_info.prefix + final_string + column_info.suffix
+
+            merged_df[column_info.new_column_name] = merged_df.apply(create_new_value, axis=1)
+
+        # Create a list of all the new column names that were added
+        new_column_names = [col.new_column_name for col in config.new_columns]
+        
+        # Clean up the final DataFrame
+        final_df = merged_df[main_df.columns.tolist() + new_column_names]
+        
+        output_filename = "output_with_new_columns.xlsx"
+        output_path = os.path.join(results_folder, output_filename)
+        final_df.to_excel(output_path, index=False)
+        print(f"[{session_id}] Output file saved successfully.")
+
+        # Update meta.json with the final status
+        if os.path.exists(meta_path):
+            with open(meta_path, 'r+') as f:
+                meta_data = json.load(f)
+                meta_data["status"] = "completed"
+                meta_data["results"] = {"output_file": output_filename}
+                f.seek(0)
+                json.dump(meta_data, f, indent=4)
+                f.truncate()
+        
+    except Exception as e:
+        print(f"[{session_id}] FATAL ERROR in background task: {e}")
+        # Update meta.json with a failed status
+        if os.path.exists(meta_path):
+            with open(meta_path, 'r+') as f:
+                meta_data = json.load(f)
+                meta_data["status"] = "failed"
+                meta_data["error"] = str(e)
+                f.seek(0)
+                json.dump(meta_data, f, indent=4)
+                f.truncate()
+
+
+@app.post("/services/create-column")
+async def create_columns_with_string(config: CreateColumnsConfig, background_tasks: BackgroundTasks):
+    """This endpoint now accepts a list of new columns to create."""
+    session_id = config.session_id
+    meta_path = f"reference_files/{session_id}/meta.json"
+
+    if os.path.exists(meta_path):
+        with open(meta_path, 'r+') as f:
+            meta_data = json.load(f)
+            meta_data["status"] = "processing"
+            meta_data["results"] = None
+            f.seek(0)
+            json.dump(meta_data, f, indent=4)
+            f.truncate()
+
+    background_tasks.add_task(create_columns_logic, session_id, config.dict())
+    
+    return {"message": "The 'Create Columns' process has been started."}
 
 
 
