@@ -35,16 +35,7 @@ app.add_middleware(
     allow_headers=["*"], # Allows all headers
 )
 
-def get_s3_client():
-    """
-    This function is a dependency that creates a new S3 client for each request.
-    It ensures environment variables are loaded.
-    """
-    return boto3.client(
-        's3',
-        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY')
-    )
+
 # =================================================================
 
 class KeyConfig(BaseModel):
@@ -158,10 +149,13 @@ def start_session():
 
 
 @app.post("/upload-main-file")
-async def upload_main_file(session_id: str = Form(...), file: UploadFile = File(...), s3_client = Depends(get_s3_client)):
-    
-    S3_BUCKET_NAME = os.environ.get('S3_BUCKET_NAME') 
-    # The key is the full path in the S3 bucket
+async def upload_main_file(session_id: str = Form(...), file: UploadFile = File(...)):
+    S3_BUCKET_NAME = os.environ.get('S3_BUCKET_NAME')
+    s3_client = boto3.client(
+        's3',
+        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY')
+    )
     file_key = f"{session_id}/main_files/{file.filename}"
     
     try:
