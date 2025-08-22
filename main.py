@@ -11,6 +11,7 @@ import glob
 from enum import Enum
 from fastapi.responses import FileResponse 
 from fastapi.middleware.cors import CORSMiddleware
+
 from fastapi import Depends 
 import boto3
 from botocore.exceptions import NoCredentialsError
@@ -147,55 +148,40 @@ def start_session():
 #     }
 
 
-
 @app.post("/upload-main-file")
 async def upload_main_file(session_id: str = Form(...), file: UploadFile = File(...)):
-    S3_BUCKET_NAME = os.environ.get('S3_BUCKET_NAME')
+    # --- Start Debugging ---
+    aws_access_key = os.environ.get('AWS_ACCESS_KEY_ID')
+    aws_secret_key = os.environ.get('AWS_SECRET_ACCESS_KEY')
+    bucket_name = os.environ.get('S3_BUCKET_NAME')
+
+    print("--- DEBUGGING S3 CREDENTIALS ---")
+    print(f"Access Key ID from env: {aws_access_key}")
+    print(f"Secret Key is set in env: {bool(aws_secret_key)}") # We don't print the actual secret
+    print(f"Bucket Name from env: {bucket_name}")
+    print("---------------------------------")
+    # --- End Debugging ---
+    
+    # Check if any variable is None before creating the client
+    if not all([aws_access_key, aws_secret_key, bucket_name]):
+        raise HTTPException(status_code=500, detail="One or more AWS environment variables are missing.")
+
     s3_client = boto3.client(
         's3',
-        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY')
+        aws_access_key_id=aws_access_key,
+        aws_secret_access_key=aws_secret_key
     )
+    S3_BUCKET_NAME = bucket_name
     file_key = f"{session_id}/main_files/{file.filename}"
     
     try:
-        # Upload the file directly to S3
         s3_client.upload_fileobj(file.file, S3_BUCKET_NAME, file_key)
         
-        # For simplicity, we'll stop converting to CSV for now
-        # and assume the user uploads a CSV. We can add this back later.
-        
-        # To get a preview, we need to read the file from S3
-        response = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=file_key)
-        # Read only the first few lines for the preview
-        file_content = response['Body'].read().decode('utf-8').splitlines()
-        
-        # This is a simplified preview logic for CSV
-        header = file_content[0].split(',')
-        first_row = file_content[1].split(',')
-        second_row = file_content[2].split(',')
-        
-        preview_dict = [
-            dict(zip(header, first_row)),
-            dict(zip(header, second_row))
-        ]
+        # Simplified response for now
+        return {"filename": file.filename, "session_id": session_id}
 
-        # Get file size from S3 metadata
-        head_object = s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=file_key)
-        file_size_kb = round(head_object['ContentLength'] / 1024, 2)
-
-    except NoCredentialsError:
-        raise HTTPException(status_code=500, detail="AWS credentials not available.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred with S3: {e}")
-
-    return {
-        "filename": file.filename,
-        "size_kb": file_size_kb,
-        "preview": preview_dict,
-        "session_id": session_id
-    }
-
 
 @app.get("/debug-env")
 async def debug_env():
